@@ -33,6 +33,8 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+.gradle-user-home/
+.vscode/
 
 # Flutter generated platform files
 android/local.properties
