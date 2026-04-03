@@ -10,9 +10,12 @@ void main() {
     await tester.pumpWidget(const IPCameraWatcherApp());
     await tester.pump();
 
-    expect(find.text('IP Camera Viewer and Face Alert System'), findsOneWidget);
+    expect(
+      find.text('IP Camera Viewer and Target Alert System'),
+      findsOneWidget,
+    );
     expect(find.text('Take Picture From IP Cam'), findsOneWidget);
-    expect(find.text('Select Face and Save Alert Target'), findsOneWidget);
+    expect(find.text('Select Target and Save Alert'), findsOneWidget);
     expect(find.text('Start Monitoring'), findsOneWidget);
   });
 }

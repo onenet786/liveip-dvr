@@ -183,7 +183,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       final bytes = base64Decode(targetImage);
       _targetFrameBytes = bytes;
       _targetSignature = _buildSignature(bytes);
-      _statusText = 'Saved alert target restored. Ready to monitor.';
+      _statusText = 'Saved target restored. Ready to monitor.';
     }
     _ensureDahuaChannelState();
 
@@ -247,13 +247,21 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
         : _defaultDahuaUrl;
   }
 
-  String _dahuaRtspUrl(int channel) {
+  List<String> _dahuaRtspUrls(int channel) {
     final uri = Uri.parse(_normalizedCameraBaseUrl());
     final host = uri.host.isEmpty ? '192.168.19.22' : uri.host;
     final credentials = _cameraUsername.isEmpty
         ? ''
         : '${Uri.encodeComponent(_cameraUsername)}:${Uri.encodeComponent(_cameraPassword)}@';
-    return 'rtsp://$credentials$host:$_dahuaRtspPort/cam/realmonitor?channel=$channel&subtype=0&unicast=true&proto=Onvif';
+    final base = 'rtsp://$credentials$host:$_dahuaRtspPort';
+    return [
+      '$base/cam/realmonitor?channel=$channel&subtype=0',
+      '$base/cam/realmonitor?channel=$channel&subtype=0&unicast=true',
+      '$base/cam/realmonitor?channel=$channel&subtype=1',
+      '$base/cam/realmonitor?channel=$channel&subtype=1&unicast=true',
+      '$base/live/ch00_${channel - 1}',
+      '$base/live/ch0$channel',
+    ];
   }
 
   Future<void> _disposeDahuaPlayer() async {
@@ -301,8 +309,34 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       });
     });
 
-    await player.open(Media(_dahuaRtspUrl(_selectedCameraChannel)));
-    await player.play();
+    Object? lastError;
+    for (final url in _dahuaRtspUrls(_selectedCameraChannel)) {
+      try {
+        await player.open(Media(url));
+        await player.play();
+        if (mounted) {
+          setState(() {
+            _statusText =
+                'Trying Dahua RTSP live on channel $_selectedCameraChannel.';
+          });
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _isLiveConnected = false;
+        _dahuaChannelConnected[_selectedCameraChannel] = false;
+        _statusText =
+            'Dahua RTSP error: failed to recognize stream format on channel $_selectedCameraChannel.';
+      });
+    }
+    if (lastError != null) {
+      throw Exception(lastError.toString());
+    }
   }
 
   void _ensureDahuaChannelState() {
@@ -474,6 +508,30 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     return _performAuthenticatedGet(_frameUri(channel: channel));
   }
 
+  Future<Uint8List?> _captureBestFrameBytes() async {
+    if (_selectedVendor == CameraVendor.dahuaXvr &&
+        _selectedCameraChannel ==
+            (_fullscreenLiveChannel ?? _selectedCameraChannel) &&
+        _dahuaPlayer != null) {
+      try {
+        final screenshot = await _dahuaPlayer!.screenshot(format: 'image/jpeg');
+        if (screenshot != null && screenshot.isNotEmpty) {
+          return screenshot;
+        }
+      } catch (_) {
+        // Fall back to HTTP snapshot if RTSP screenshot is unavailable.
+      }
+    }
+
+    final response = await _fetchCameraFrame(channel: _selectedCameraChannel);
+    if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+      throw Exception(
+        'Camera response was empty (${response.statusCode}) on channel $_selectedCameraChannel.',
+      );
+    }
+    return response.bodyBytes;
+  }
+
   String? _buildDigestAuthorizationHeader({
     required String challenge,
     required String method,
@@ -577,31 +635,23 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     });
 
     try {
-      final response = await _fetchCameraFrame(channel: _selectedCameraChannel);
-      if (response.statusCode == 401 || response.statusCode == 403) {
-        _setStatus(
-          _selectedVendor == CameraVendor.hikvision
-              ? 'Hikvision camera rejected the request. Add the camera username and password.'
-              : 'Dahua XVR rejected the request. Check the XVR username and password.',
-        );
-        return;
-      }
-      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
-        throw Exception(
-          'Camera response was empty (${response.statusCode}) on channel $_selectedCameraChannel.',
-        );
+      final bytes = await _captureBestFrameBytes();
+      if (bytes == null || bytes.isEmpty) {
+        throw Exception('Capture returned no image data.');
       }
 
       setState(() {
-        _currentFrameBytes = response.bodyBytes;
+        _currentFrameBytes = bytes;
         if (_selectedVendor == CameraVendor.hikvision) {
-          _liveFrameBytes = response.bodyBytes;
+          _liveFrameBytes = bytes;
         } else {
-          _dahuaLiveFrames[_selectedCameraChannel] = response.bodyBytes;
+          _dahuaLiveFrames[_selectedCameraChannel] = bytes;
           _dahuaChannelConnected[_selectedCameraChannel] = true;
         }
         _lastFrameAt = DateTime.now();
-        _statusText = 'Live frame captured from the IP camera.';
+        _statusText = _selectedVendor == CameraVendor.dahuaXvr
+            ? 'High-quality frame captured from Dahua primary channel $_selectedCameraChannel.'
+            : 'Live frame captured from the IP camera.';
       });
 
       await _persistConfig();
@@ -641,7 +691,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
 
     if (selection.signature.isEmpty) {
       _setStatus(
-        'This face crop could not be processed. Try selecting a clearer face.',
+        'This target crop could not be processed. Try selecting a clearer face or object.',
       );
       setState(() {
         _isSavingTarget = false;
@@ -653,7 +703,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       _targetFrameBytes = selection.croppedBytes;
       _targetSignature = selection.signature;
       _statusText =
-          'Face target saved from the selected crop. Monitoring can start now.';
+          'Target saved from the selected crop. Monitoring can start now.';
     });
 
     await _persistConfig();
@@ -673,7 +723,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
 
     if (_targetSignature == null) {
       _setStatus(
-        'Save a target image first so the app knows who to watch for.',
+        'Save a target image first so the app knows what to watch for.',
       );
       return;
     }
@@ -962,7 +1012,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
             final rect = normalizedRect();
 
             return AlertDialog(
-              title: const Text('Select Face Area'),
+              title: const Text('Select Target Area'),
               content: SizedBox(
                 width: 420,
                 child: Column(
@@ -970,7 +1020,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     const Text(
-                      'Move the square over the person\'s face only. This will reduce false alerts from other objects.',
+                      'Move the square over the face or object you want to detect. A tighter crop usually gives better matching.',
                     ),
                     const SizedBox(height: 16),
                     AspectRatio(
@@ -1062,7 +1112,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
                       ),
                     );
                   },
-                  child: const Text('Save Face Target'),
+                  child: const Text('Save Target'),
                 ),
               ],
             );
@@ -1308,7 +1358,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'IP Camera Viewer and Face Alert System',
+                  'IP Camera Viewer and Target Alert System',
                   style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                     fontWeight: FontWeight.w800,
                     letterSpacing: -0.8,
@@ -1316,7 +1366,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  'Capture a person from the camera, save that image as the watch target, and trigger a full-screen alarm when a similar face appears under the IP camera again.',
+                  'Capture a frame from the camera, save a face or object as the watch target, and trigger a full-screen alarm when a similar target appears again.',
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     height: 1.5,
                     color: const Color(0xFF503A2B),
@@ -1504,8 +1554,10 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
               Expanded(
                 child: TextField(
                   controller: _usernameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Hikvision username',
+                  decoration: InputDecoration(
+                    labelText: _selectedVendor == CameraVendor.hikvision
+                        ? 'Hikvision username'
+                        : 'Device username',
                     border: OutlineInputBorder(),
                   ),
                   onChanged: (_) => _persistConfig(),
@@ -1516,8 +1568,10 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
                 child: TextField(
                   controller: _passwordController,
                   obscureText: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Hikvision password',
+                  decoration: InputDecoration(
+                    labelText: _selectedVendor == CameraVendor.hikvision
+                        ? 'Hikvision password'
+                        : 'Device password',
                     border: OutlineInputBorder(),
                   ),
                   onChanged: (_) => _persistConfig(),
@@ -1580,7 +1634,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
             label: Text(
               _isSavingTarget
                   ? 'Saving target...'
-                  : 'Select Face and Save Alert Target',
+                  : 'Select Target and Save Alert',
             ),
           ),
           const SizedBox(height: 12),
@@ -1675,7 +1729,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
             '2. Enter the device login if the camera or XVR is protected.\n'
             '3. In Dahua mode, set the XVR camera count and choose the primary channel.\n'
             '4. Dahua live video now uses RTSP on the primary channel instead of repeated snapshot polling.\n'
-            '5. Use "Take Picture From IP Cam" and "Select Face and Save Alert Target" on the primary channel for alert monitoring.',
+            '5. Use "Take Picture From IP Cam" and "Select Target and Save Alert" on the primary channel for alert monitoring.',
             style: TextStyle(color: Color(0xFFF0DDD1), height: 1.5),
           ),
         ],
@@ -1749,7 +1803,8 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
         const SizedBox(height: 20),
         _buildFrameCard(
           title: 'Alert Target Box',
-          subtitle: 'Selected face crop used for monitoring and alerting.',
+          subtitle:
+              'Selected face or object crop used for monitoring and alerting.',
           bytes: _targetFrameBytes,
           accentColor: const Color(0xFF9B3D2A),
           emptyText: 'No alert target saved yet.',
