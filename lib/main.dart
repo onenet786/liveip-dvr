@@ -1,11 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -53,140 +50,10 @@ class _TargetSelectionResult {
   final List<int> signature;
 }
 
-class _MonitorScanRequest {
-  const _MonitorScanRequest({
-    required this.bytes,
-    required this.targetSignature,
-  });
-
-  final Uint8List bytes;
-  final List<int> targetSignature;
-}
-
-double _runMonitorScanInBackground(_MonitorScanRequest request) {
-  final decoded = img.decodeImage(request.bytes);
-  if (decoded == null) {
-    return 0;
-  }
-
-  final minSide = min(decoded.width, decoded.height);
-  final wholeFrameSignature = _buildSignatureFromDecodedImage(decoded);
-  var best = 0.0;
-
-  if (wholeFrameSignature != null) {
-    best = max(
-      best,
-      _compareSignatureLists(request.targetSignature, wholeFrameSignature),
-    );
-  }
-
-  final centerScales = [0.55, 0.7, 0.85];
-  for (final scale in centerScales) {
-    final cropSize = max(40, (minSide * scale).round());
-    final x = max(0, (decoded.width - cropSize) ~/ 2);
-    final y = max(0, (decoded.height - cropSize) ~/ 2);
-    final candidate = img.copyCrop(
-      decoded,
-      x: x,
-      y: y,
-      width: min(cropSize, decoded.width - x),
-      height: min(cropSize, decoded.height - y),
-    );
-    final signature = _buildSignatureFromDecodedImage(candidate);
-    if (signature != null) {
-      best = max(
-        best,
-        _compareSignatureLists(request.targetSignature, signature),
-      );
-    }
-  }
-
-  final scales = [0.18, 0.24, 0.3, 0.36, 0.42];
-  for (final scale in scales) {
-    final cropSize = max(40, (minSide * scale).round());
-    final step = max(18, cropSize ~/ 3);
-    final maxY = max(0, decoded.height - cropSize);
-    final maxX = max(0, decoded.width - cropSize);
-
-    for (var y = 0; y <= maxY; y += step) {
-      for (var x = 0; x <= maxX; x += step) {
-        final candidate = img.copyCrop(
-          decoded,
-          x: x,
-          y: y,
-          width: cropSize,
-          height: cropSize,
-        );
-        final signature = _buildSignatureFromDecodedImage(candidate);
-        if (signature == null) {
-          continue;
-        }
-
-        final similarity = _compareSignatureLists(
-          request.targetSignature,
-          signature,
-        );
-        if (similarity > best) {
-          best = similarity;
-        }
-      }
-    }
-  }
-
-  return best;
-}
-
-List<int>? _buildSignatureFromDecodedImage(img.Image decoded) {
-  final squareSize = decoded.width < decoded.height
-      ? decoded.width
-      : decoded.height;
-  if (squareSize <= 0) {
-    return null;
-  }
-  final left = (decoded.width - squareSize) ~/ 2;
-  final top = (decoded.height - squareSize) ~/ 2;
-  final cropped = img.copyCrop(
-    decoded,
-    x: left,
-    y: top,
-    width: squareSize,
-    height: squareSize,
-  );
-  final resized = img.copyResizeCropSquare(cropped, size: 32);
-  final grayscale = img.grayscale(resized);
-
-  final signature = <int>[];
-  for (var y = 0; y < grayscale.height; y += 2) {
-    for (var x = 0; x < grayscale.width; x += 2) {
-      final pixel = grayscale.getPixel(x, y);
-      signature.add(pixel.r.toInt());
-    }
-  }
-  return signature;
-}
-
-double _compareSignatureLists(List<int> a, List<int> b) {
-  if (a.length != b.length || a.isEmpty) {
-    return 0;
-  }
-
-  var totalDelta = 0.0;
-  for (var i = 0; i < a.length; i++) {
-    totalDelta += (a[i] - b[i]).abs();
-  }
-
-  final averageDelta = totalDelta / a.length;
-  final similarity = 100 - ((averageDelta / 255) * 100);
-  return similarity.clamp(0, 100);
-}
-
 enum CameraVendor { hikvision, dahuaXvr }
 
 class _CachedAuthChallenge {
-  const _CachedAuthChallenge({
-    required this.challenge,
-    required this.isDigest,
-  });
+  const _CachedAuthChallenge({required this.challenge, required this.isDigest});
 
   final String challenge;
   final bool isDigest;
@@ -276,8 +143,6 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
   static const String _defaultDahuaUrl =
       'http://192.168.18.175/cgi-bin/snapshot.cgi';
   static const String _savedDevicesPrefsKey = 'successful_device_profiles';
-  static const Duration _httpRequestTimeout = Duration(seconds: 6);
-  static const Duration _rtspOpenTimeout = Duration(seconds: 8);
 
   CameraVendor _selectedVendor = CameraVendor.hikvision;
   final TextEditingController _cameraUrlController = TextEditingController();
@@ -404,21 +269,10 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       _intervalController.text = savedInterval.toString();
     }
     if (targetImage != null && targetImage.isNotEmpty) {
-      try {
-        final bytes = base64Decode(targetImage);
-        final signature = _buildSignature(bytes);
-        if (signature != null && signature.isNotEmpty) {
-          _targetFrameBytes = bytes;
-          _targetSignature = signature;
-          _statusText = 'Saved target restored. Ready to monitor.';
-        } else {
-          await prefs.remove('target_frame_b64');
-          _statusText = 'Saved target was invalid and has been cleared.';
-        }
-      } catch (_) {
-        await prefs.remove('target_frame_b64');
-        _statusText = 'Saved target was invalid and has been cleared.';
-      }
+      final bytes = base64Decode(targetImage);
+      _targetFrameBytes = bytes;
+      _targetSignature = _buildSignature(bytes);
+      _statusText = 'Saved target restored. Ready to monitor.';
     }
     _ensureDahuaChannelState();
     _selectedSavedDeviceId = _matchingSavedDeviceId();
@@ -452,64 +306,21 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
 
   List<_SavedDeviceProfile> _readSavedDeviceProfiles(SharedPreferences prefs) {
     final entries = prefs.getStringList(_savedDevicesPrefsKey) ?? const [];
-    final profilesById = <String, _SavedDeviceProfile>{};
+    final profiles = <_SavedDeviceProfile>[];
     for (final entry in entries) {
       try {
         final decoded = jsonDecode(entry);
         if (decoded is Map<String, dynamic>) {
-          final profile = _SavedDeviceProfile.fromJson(decoded);
-          final dedupedId = _deviceProfileId(
-            vendor: profile.vendor,
-            cameraUrl: profile.cameraUrl,
-            username: profile.username,
-          );
-          final normalizedProfile = _SavedDeviceProfile(
-            id: dedupedId,
-            vendor: profile.vendor,
-            cameraUrl: profile.cameraUrl,
-            username: profile.username,
-            password: profile.password,
-            dahuaChannelCount: profile.dahuaChannelCount,
-            dahuaRtspPort: profile.dahuaRtspPort,
-            selectedCameraChannel: profile.selectedCameraChannel,
-            lastConnectedAt: profile.lastConnectedAt,
-          );
-          final existing = profilesById[dedupedId];
-          if (existing == null ||
-              normalizedProfile.lastConnectedAt.isAfter(existing.lastConnectedAt)) {
-            profilesById[dedupedId] = normalizedProfile;
-          }
+          profiles.add(_SavedDeviceProfile.fromJson(decoded));
         } else if (decoded is Map) {
-          final profile = _SavedDeviceProfile.fromJson(
-            Map<String, dynamic>.from(decoded),
+          profiles.add(
+            _SavedDeviceProfile.fromJson(Map<String, dynamic>.from(decoded)),
           );
-          final dedupedId = _deviceProfileId(
-            vendor: profile.vendor,
-            cameraUrl: profile.cameraUrl,
-            username: profile.username,
-          );
-          final normalizedProfile = _SavedDeviceProfile(
-            id: dedupedId,
-            vendor: profile.vendor,
-            cameraUrl: profile.cameraUrl,
-            username: profile.username,
-            password: profile.password,
-            dahuaChannelCount: profile.dahuaChannelCount,
-            dahuaRtspPort: profile.dahuaRtspPort,
-            selectedCameraChannel: profile.selectedCameraChannel,
-            lastConnectedAt: profile.lastConnectedAt,
-          );
-          final existing = profilesById[dedupedId];
-          if (existing == null ||
-              normalizedProfile.lastConnectedAt.isAfter(existing.lastConnectedAt)) {
-            profilesById[dedupedId] = normalizedProfile;
-          }
         }
       } catch (_) {
         // Skip malformed saved device entries.
       }
     }
-    final profiles = profilesById.values.toList();
     profiles.sort((a, b) => b.lastConnectedAt.compareTo(a.lastConnectedAt));
     return profiles;
   }
@@ -526,11 +337,13 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     required CameraVendor vendor,
     required String cameraUrl,
     required String username,
+    required int selectedChannel,
   }) {
     return [
       vendor.name,
       cameraUrl.toLowerCase(),
       username.toLowerCase(),
+      selectedChannel.toString(),
     ].join('|');
   }
 
@@ -539,6 +352,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       vendor: _selectedVendor,
       cameraUrl: _normalizedCameraBaseUrl(),
       username: _cameraUsername,
+      selectedChannel: _selectedCameraChannel,
     );
     for (final profile in _savedDevices) {
       if (profile.id == currentId) {
@@ -553,6 +367,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       vendor: _selectedVendor,
       cameraUrl: _normalizedCameraBaseUrl(),
       username: _cameraUsername,
+      selectedChannel: _selectedCameraChannel,
     );
     if (_selectedSavedDeviceId == profileId &&
         _savedDevices.isNotEmpty &&
@@ -594,40 +409,6 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     await _persistSavedDevices();
   }
 
-  String _savedDeviceDisplayLabel(_SavedDeviceProfile profile) {
-    final uri = Uri.tryParse(profile.cameraUrl);
-    final host = uri?.host.isNotEmpty == true ? uri!.host : profile.cameraUrl;
-    final vendorLabel = profile.vendor == CameraVendor.hikvision
-        ? 'IP Cam'
-        : 'DVR/NVR';
-    final userSuffix = profile.username.isEmpty ? '' : ' • ${profile.username}';
-    return '$vendorLabel • $host$userSuffix';
-  }
-
-  Future<void> _removeSavedDevice(String id) async {
-    final updatedDevices =
-        _savedDevices.where((device) => device.id != id).toList();
-    final currentDeviceId = _deviceProfileId(
-      vendor: _selectedVendor,
-      cameraUrl: _normalizedCameraBaseUrl(),
-      username: _cameraUsername,
-    );
-    final nextSelectedId = _selectedSavedDeviceId == id &&
-            updatedDevices.any((device) => device.id == currentDeviceId)
-        ? currentDeviceId
-        : (_selectedSavedDeviceId == id ? null : _selectedSavedDeviceId);
-    if (mounted) {
-      setState(() {
-        _savedDevices = updatedDevices;
-        _selectedSavedDeviceId = nextSelectedId;
-      });
-    } else {
-      _savedDevices = updatedDevices;
-      _selectedSavedDeviceId = nextSelectedId;
-    }
-    await _persistSavedDevices();
-  }
-
   void _applySavedDeviceProfile(_SavedDeviceProfile profile) {
     setState(() {
       if (_selectedVendor == CameraVendor.dahuaXvr &&
@@ -648,7 +429,8 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       _selectedSavedDeviceId = profile.id;
       _isLiveConnected = false;
       _ensureDahuaChannelState();
-      _statusText = 'Quick-connect device loaded. Start live stream or capture.';
+      _statusText =
+          'Quick-connect device loaded. Start live stream or capture.';
     });
     _persistConfig();
   }
@@ -825,9 +607,14 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
   int get _hikvisionRtspChannelNumber {
     final uri = Uri.tryParse(_normalizedCameraBaseUrl());
     final path = uri?.path ?? '';
-    final match = RegExp(r'/channels/(\d+)/', caseSensitive: false).firstMatch(path);
+    final match = RegExp(
+      r'/channels/(\d+)/',
+      caseSensitive: false,
+    ).firstMatch(path);
     final snapshotChannel = int.tryParse(match?.group(1) ?? '') ?? 1;
-    return snapshotChannel >= 100 ? snapshotChannel : (snapshotChannel * 100) + 1;
+    return snapshotChannel >= 100
+        ? snapshotChannel
+        : (snapshotChannel * 100) + 1;
   }
 
   List<String> _hikvisionRtspUrls() {
@@ -847,7 +634,13 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     candidates.addAll([
       base.replace(path: '/Streaming/Channels/$channel').toString(),
       base.replace(path: '/ISAPI/Streaming/channels/$channel').toString(),
-      base.replace(path: '/Streaming/Channels/$channel' '01').toString(),
+      base
+          .replace(
+            path:
+                '/Streaming/Channels/$channel'
+                '01',
+          )
+          .toString(),
     ]);
 
     final seen = <String>{};
@@ -895,72 +688,47 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     }
   }
 
-  Future<http.Response> _httpGetWithTimeout(
-    Uri uri, {
-    Map<String, String>? headers,
-  }) {
-    return _httpClient
-        .get(uri, headers: headers)
-        .timeout(
-          _httpRequestTimeout,
-          onTimeout: () => throw TimeoutException(
-            'Camera request timed out after ${_httpRequestTimeout.inSeconds} seconds.',
-          ),
-        );
-  }
-
-  Future<void> _openPlayerWithTimeout(Player player, String url) {
-    return player
-        .open(Media(url))
-        .then((_) => player.play())
-        .timeout(
-          _rtspOpenTimeout,
-          onTimeout: () => throw TimeoutException(
-            'RTSP stream timed out after ${_rtspOpenTimeout.inSeconds} seconds.',
-          ),
-        );
-  }
-
   Future<void> _startDahuaRtspLive() async {
     await _disposeDahuaPlayer();
+    final player = Player();
+    await _configureDahuaPlayer(player);
+    final controller = VideoController(player);
+    _dahuaPlayer = player;
+    _dahuaVideoController = controller;
+
+    _dahuaPlayingSubscription = player.stream.playing.listen((playing) {
+      if (!mounted || _selectedVendor != CameraVendor.dahuaXvr) {
+        return;
+      }
+      if (playing) {
+        setState(() {
+          _isLiveConnected = true;
+          _dahuaChannelConnected[_selectedCameraChannel] = true;
+          _statusText =
+              'Dahua RTSP live stream connected on channel $_selectedCameraChannel.';
+        });
+        unawaited(_saveSuccessfulDevice());
+      }
+    });
+
+    _dahuaErrorSubscription = player.stream.error.listen((error) {
+      if (!mounted || _selectedVendor != CameraVendor.dahuaXvr) {
+        return;
+      }
+      setState(() {
+        _isLiveConnected = false;
+        _dahuaChannelConnected[_selectedCameraChannel] = false;
+        _statusText = 'Dahua RTSP error: $error';
+      });
+    });
+
     Object? lastError;
     final attemptedUrls = <String>[];
     for (final url in _dahuaRtspUrls(_selectedCameraChannel)) {
       attemptedUrls.add(url);
-      final player = Player();
       try {
-        await _configureDahuaPlayer(player);
-        await _openPlayerWithTimeout(player, url);
-        final controller = VideoController(player);
-        _dahuaPlayer = player;
-        _dahuaVideoController = controller;
-
-        _dahuaPlayingSubscription = player.stream.playing.listen((playing) {
-          if (!mounted || _selectedVendor != CameraVendor.dahuaXvr) {
-            return;
-          }
-          if (playing) {
-            setState(() {
-              _isLiveConnected = true;
-              _dahuaChannelConnected[_selectedCameraChannel] = true;
-              _statusText =
-                  'Dahua RTSP live stream connected on channel $_selectedCameraChannel.';
-            });
-            unawaited(_saveSuccessfulDevice());
-          }
-        });
-
-        _dahuaErrorSubscription = player.stream.error.listen((error) {
-          if (!mounted || _selectedVendor != CameraVendor.dahuaXvr) {
-            return;
-          }
-          setState(() {
-            _isLiveConnected = false;
-            _dahuaChannelConnected[_selectedCameraChannel] = false;
-            _statusText = 'Dahua RTSP error: $error';
-          });
-        });
-
+        await player.open(Media(url));
+        await player.play();
         if (mounted) {
           setState(() {
             _statusText =
@@ -970,7 +738,6 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
         return;
       } catch (error) {
         lastError = error;
-        await player.dispose();
       }
     }
 
@@ -993,41 +760,42 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
 
   Future<void> _startHikvisionRtspLive() async {
     await _disposeHikvisionPlayer();
+    final player = Player();
+    await _configureDahuaPlayer(player);
+    final controller = VideoController(player);
+    _hikvisionPlayer = player;
+    _hikvisionVideoController = controller;
+
+    _hikvisionPlayingSubscription = player.stream.playing.listen((playing) {
+      if (!mounted || _selectedVendor != CameraVendor.hikvision) {
+        return;
+      }
+      if (playing) {
+        setState(() {
+          _isLiveConnected = true;
+          _statusText = 'Hikvision RTSP live stream connected.';
+        });
+        unawaited(_saveSuccessfulDevice());
+      }
+    });
+
+    _hikvisionErrorSubscription = player.stream.error.listen((error) {
+      if (!mounted || _selectedVendor != CameraVendor.hikvision) {
+        return;
+      }
+      setState(() {
+        _isLiveConnected = false;
+        _statusText = 'Hikvision RTSP error: $error';
+      });
+    });
+
     Object? lastError;
     final attemptedUrls = <String>[];
     for (final url in _hikvisionRtspUrls()) {
       attemptedUrls.add(url);
-      final player = Player();
       try {
-        await _configureDahuaPlayer(player);
-        await _openPlayerWithTimeout(player, url);
-        final controller = VideoController(player);
-        _hikvisionPlayer = player;
-        _hikvisionVideoController = controller;
-
-        _hikvisionPlayingSubscription = player.stream.playing.listen((playing) {
-          if (!mounted || _selectedVendor != CameraVendor.hikvision) {
-            return;
-          }
-          if (playing) {
-            setState(() {
-              _isLiveConnected = true;
-              _statusText = 'Hikvision RTSP live stream connected.';
-            });
-            unawaited(_saveSuccessfulDevice());
-          }
-        });
-
-        _hikvisionErrorSubscription = player.stream.error.listen((error) {
-          if (!mounted || _selectedVendor != CameraVendor.hikvision) {
-            return;
-          }
-          setState(() {
-            _isLiveConnected = false;
-            _statusText = 'Hikvision RTSP error: $error';
-          });
-        });
-
+        await player.open(Media(url));
+        await player.play();
         if (mounted) {
           setState(() {
             _statusText = 'Trying Hikvision RTSP live stream.';
@@ -1036,7 +804,6 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
         return;
       } catch (error) {
         lastError = error;
-        await player.dispose();
       }
     }
 
@@ -1084,22 +851,14 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       return _defaultUrlForVendor(_selectedVendor);
     }
 
-    if (input.startsWith('rtsp://') || input.startsWith('rtsps://')) {
+    if (_selectedVendor == CameraVendor.dahuaXvr &&
+        (input.startsWith('rtsp://') || input.startsWith('rtsps://'))) {
       final uri = Uri.tryParse(input);
       if (uri != null && uri.host.isNotEmpty) {
-        if (_selectedVendor == CameraVendor.dahuaXvr) {
-          return Uri(
-            scheme: 'http',
-            host: uri.host,
-            port: uri.hasPort ? uri.port : null,
-            path: '/cgi-bin/snapshot.cgi',
-          ).toString();
-        }
         return Uri(
           scheme: 'http',
           host: uri.host,
-          port: uri.hasPort ? uri.port : null,
-          path: '/ISAPI/Streaming/channels/1/picture',
+          path: '/cgi-bin/snapshot.cgi',
         ).toString();
       }
     }
@@ -1132,6 +891,13 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
 
   Uri _frameUri({int channel = 1}) {
     final normalizedUrl = _normalizedCameraBaseUrl();
+    if (_cameraUrlController.text.trim() != normalizedUrl) {
+      _cameraUrlController.text = normalizedUrl;
+      _cameraUrlController.selection = TextSelection.collapsed(
+        offset: normalizedUrl.length,
+      );
+    }
+
     final uri = Uri.parse(normalizedUrl);
     final params = Map<String, String>.from(uri.queryParameters);
     params['ts'] = DateTime.now().millisecondsSinceEpoch.toString();
@@ -1197,7 +963,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
         challenge: cachedChallenge,
       );
       if (preemptiveHeaders.isNotEmpty) {
-        final preemptiveResponse = await _httpGetWithTimeout(
+        final preemptiveResponse = await _httpClient.get(
           uri,
           headers: preemptiveHeaders,
         );
@@ -1208,7 +974,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
       }
     }
 
-    var response = await _httpGetWithTimeout(uri);
+    var response = await _httpClient.get(uri);
 
     if (response.statusCode == 401 && _cameraUsername.isNotEmpty) {
       final challenge = response.headers['www-authenticate'] ?? '';
@@ -1222,13 +988,10 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
           challenge: _authChallengesByCamera[cacheKey]!,
         );
         if (retryHeaders.isNotEmpty) {
-          response = await _httpGetWithTimeout(uri, headers: retryHeaders);
+          response = await _httpClient.get(uri, headers: retryHeaders);
         }
       } else {
-        response = await _httpGetWithTimeout(
-          uri,
-          headers: _basicAuthHeaders(),
-        );
+        response = await _httpClient.get(uri, headers: _basicAuthHeaders());
       }
     }
 
@@ -1297,19 +1060,6 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
         _dahuaPlayer != null) {
       try {
         final screenshot = await _dahuaPlayer!.screenshot(format: 'image/jpeg');
-        if (screenshot != null && screenshot.isNotEmpty) {
-          return screenshot;
-        }
-      } catch (_) {
-        // Fall back to HTTP snapshot if RTSP screenshot is unavailable.
-      }
-    }
-
-    if (_selectedVendor == CameraVendor.hikvision && _hikvisionPlayer != null) {
-      try {
-        final screenshot = await _hikvisionPlayer!.screenshot(
-          format: 'image/jpeg',
-        );
         if (screenshot != null && screenshot.isNotEmpty) {
           return screenshot;
         }
@@ -1509,110 +1259,15 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     }
   }
 
-  Future<void> _pickImageAsTarget() async {
-    if (_isSavingTarget) {
-      return;
-    }
-
-    setState(() {
-      _isSavingTarget = true;
-    });
-
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: false,
-        withData: true,
-      );
-
-      if (!mounted) {
-        return;
-      }
-
-      if (result == null || result.files.isEmpty) {
-        setState(() {
-          _isSavingTarget = false;
-          _statusText = 'Image upload cancelled.';
-        });
-        return;
-      }
-
-      var bytes = result.files.single.bytes;
-      if ((bytes == null || bytes.isEmpty) &&
-          result.files.single.path != null &&
-          result.files.single.path!.isNotEmpty) {
-        bytes = await File(result.files.single.path!).readAsBytes();
-      }
-
-      if (bytes == null || bytes.isEmpty) {
-        throw Exception('Selected image file was empty.');
-      }
-
-      final selection = await _selectTargetFaceCrop(bytes);
-      if (!mounted) {
-        return;
-      }
-
-      if (selection == null) {
-        setState(() {
-          _isSavingTarget = false;
-          _statusText = 'Target image selection cancelled.';
-        });
-        return;
-      }
-
-      if (selection.signature.isEmpty) {
-        _setStatus(
-          'This uploaded image could not be processed. Try a clearer face or object.',
-        );
-        setState(() {
-          _isSavingTarget = false;
-        });
-        return;
-      }
-
-      setState(() {
-        _targetFrameBytes = selection.croppedBytes;
-        _targetSignature = selection.signature;
-        _statusText =
-            'Target saved from uploaded image. Monitoring can start now.';
-      });
-
-      await _persistConfig();
-    } catch (error) {
-      _setStatus('Could not load target image: $error');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSavingTarget = false;
-        });
-      }
-    }
-  }
-
-  bool _hasValidTargetSignature() {
-    final bytes = _targetFrameBytes;
-    final signature = _targetSignature;
-    if (bytes == null || bytes.isEmpty || signature == null || signature.isEmpty) {
-      return false;
-    }
-    final rebuiltSignature = _buildSignature(bytes);
-    if (rebuiltSignature == null || rebuiltSignature.isEmpty) {
-      return false;
-    }
-    _targetSignature = rebuiltSignature;
-    return true;
-  }
-
   void _toggleMonitoring() {
     if (_isMonitoring) {
       _stopMonitoring(message: 'Monitoring stopped.');
       return;
     }
 
-    if (!_hasValidTargetSignature()) {
+    if (_targetSignature == null) {
       _setStatus(
-        'Save or upload a valid target image first so the app knows what to watch for.',
+        'Save a target image first so the app knows what to watch for.',
       );
       return;
     }
@@ -1646,11 +1301,11 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     });
 
     if (_selectedVendor == CameraVendor.dahuaXvr) {
-      unawaited(_startDahuaRtspLive().catchError((_) {}));
+      _startDahuaRtspLive();
       return;
     }
 
-    unawaited(_startHikvisionRtspLive().catchError((_) {}));
+    _startHikvisionRtspLive();
   }
 
   void _stopLiveStreaming({String? message}) {
@@ -1725,17 +1380,9 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
         return;
       }
 
-      final similarity = await compute(
-        _runMonitorScanInBackground,
-        _MonitorScanRequest(
-          bytes: response.bodyBytes,
-          targetSignature: List<int>.from(_targetSignature!),
-        ),
-      ).timeout(
-        const Duration(seconds: 8),
-        onTimeout: () => throw TimeoutException(
-          'Monitor scan timed out.',
-        ),
+      final similarity = _scanFrameForBestMatch(
+        response.bodyBytes,
+        _targetSignature!,
       );
       final matched = similarity >= _matchThreshold;
 
@@ -2000,11 +1647,33 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
     if (decoded == null) {
       return null;
     }
-    return _buildSignatureFromDecodedImage(decoded);
+    return _buildSignatureFromImage(decoded);
   }
 
   List<int>? _buildSignatureFromImage(img.Image decoded) {
-    return _buildSignatureFromDecodedImage(decoded);
+    final squareSize = decoded.width < decoded.height
+        ? decoded.width
+        : decoded.height;
+    final left = (decoded.width - squareSize) ~/ 2;
+    final top = (decoded.height - squareSize) ~/ 2;
+    final cropped = img.copyCrop(
+      decoded,
+      x: left,
+      y: top,
+      width: squareSize,
+      height: squareSize,
+    );
+    final resized = img.copyResizeCropSquare(cropped, size: 32);
+    final grayscale = img.grayscale(resized);
+
+    final signature = <int>[];
+    for (var y = 0; y < grayscale.height; y += 2) {
+      for (var x = 0; x < grayscale.width; x += 2) {
+        final pixel = grayscale.getPixel(x, y);
+        signature.add(pixel.r.toInt());
+      }
+    }
+    return signature;
   }
 
   double _scanFrameForBestMatch(Uint8List bytes, List<int> targetSignature) {
@@ -2049,7 +1718,18 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
   }
 
   double _compareSignatures(List<int> a, List<int> b) {
-    return _compareSignatureLists(a, b);
+    if (a.length != b.length || a.isEmpty) {
+      return 0;
+    }
+
+    var totalDelta = 0.0;
+    for (var i = 0; i < a.length; i++) {
+      totalDelta += (a[i] - b[i]).abs();
+    }
+
+    final averageDelta = totalDelta / a.length;
+    final similarity = 100 - ((averageDelta / 255) * 100);
+    return similarity.clamp(0, 100);
   }
 
   void _setStatus(String message) {
@@ -2267,55 +1947,39 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
           ),
           const SizedBox(height: 18),
           if (_savedDevices.isNotEmpty) ...[
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                DropdownButtonFormField<String>(
-                  initialValue: _selectedSavedDeviceId,
-                  decoration: const InputDecoration(
-                    labelText: 'Quick connect device',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: _savedDevices
-                      .map(
-                        (device) => DropdownMenuItem(
-                          value: device.id,
-                          child: Text(
-                            _savedDeviceDisplayLabel(device),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (value) {
-                    if (value == null) {
-                      return;
-                    }
-                    _SavedDeviceProfile? profile;
-                    for (final device in _savedDevices) {
-                      if (device.id == value) {
-                        profile = device;
-                        break;
-                      }
-                    }
-                    if (profile == null) {
-                      return;
-                    }
-                    _applySavedDeviceProfile(profile);
-                  },
-                ),
-                const SizedBox(height: 10),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: IconButton.filledTonal(
-                    onPressed: _selectedSavedDeviceId == null
-                        ? null
-                        : () => _removeSavedDevice(_selectedSavedDeviceId!),
-                    tooltip: 'Remove selected device',
-                    icon: const Icon(Icons.delete_outline_rounded),
-                  ),
-                ),
-              ],
+            DropdownButtonFormField<String>(
+              initialValue: _selectedSavedDeviceId,
+              decoration: const InputDecoration(
+                labelText: 'Quick connect device',
+                border: OutlineInputBorder(),
+              ),
+              items: _savedDevices
+                  .map(
+                    (device) => DropdownMenuItem(
+                      value: device.id,
+                      child: Text(
+                        device.label,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                _SavedDeviceProfile? profile;
+                for (final device in _savedDevices) {
+                  if (device.id == value) {
+                    profile = device;
+                    break;
+                  }
+                }
+                if (profile == null) {
+                  return;
+                }
+                _applySavedDeviceProfile(profile);
+              },
             ),
             const SizedBox(height: 14),
           ],
@@ -2415,7 +2079,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
                       });
                       if (_isLiveStreaming &&
                           _selectedVendor == CameraVendor.dahuaXvr) {
-                        unawaited(_startDahuaRtspLive().catchError((_) {}));
+                        _startDahuaRtspLive();
                       }
                       _persistConfig();
                     },
@@ -2434,7 +2098,7 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
               onChanged: (_) {
                 if (_isLiveStreaming &&
                     _selectedVendor == CameraVendor.dahuaXvr) {
-                  unawaited(_startDahuaRtspLive().catchError((_) {}));
+                  _startDahuaRtspLive();
                 }
                 _persistConfig();
               },
@@ -2543,12 +2207,6 @@ class _CameraWatcherPageState extends State<CameraWatcherPage> {
                   ? 'Saving target...'
                   : 'Select Target and Save Alert',
             ),
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _isSavingTarget ? null : _pickImageAsTarget,
-            icon: const Icon(Icons.upload_file_rounded),
-            label: const Text('Upload Image for Alert'),
           ),
           const SizedBox(height: 12),
           FilledButton.icon(
